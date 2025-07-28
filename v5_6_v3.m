@@ -173,98 +173,166 @@ load("APRBS_signal.mat")
 TS
 R = 6; % Število podfunkcij (povečano za boljšo kompleksnost)
 
-fprintf('=== TAKAGI-SUGENO MODEL Z K-MEANS CLUSTERING ===\n');
+fprintf('=== TAKAGI-SUGENO MODEL Z FUZZY C-MEANS CLUSTERING ===\n');
 
-% 1. KORAK: K-means clustering za določitev centrov membership funkcij
-fprintf('Korak 1: K-means clustering za center membership funkcij...\n');
+% 1. KORAK: Fuzzy C-means clustering za določitev centrov membership funkcij
+fprintf('Korak 1: Fuzzy C-means clustering za center membership funkcij...\n');
 relevant_inputs = X_shifted(:, 3:4);  % Samo -y(k-1) in -y(k-2) za membership funkcije
 
-try
-    % K-means clustering z večimi poskusi za boljšo inicializacijo
-    [cluster_idx, C] = kmeans(relevant_inputs, R, 'MaxIter', 300, 'Replicates', 5, 'Distance', 'sqeuclidean');
-    fprintf('K-means uspešno izvršen z %d centri.\n', R);
-catch ME
-    % Fallback na grid-based inicializacijo, če k-means ne deluje
-    fprintf('K-means ni uspel (%s), uporabljam grid-based inicializacijo...\n', ME.message);
-    input_min = min(relevant_inputs);
-    input_max = max(relevant_inputs);
-    grid_size = ceil(sqrt(R));
-    [x1_grid, x2_grid] = meshgrid(linspace(input_min(1), input_max(1), grid_size), ...
-                                  linspace(input_min(2), input_max(2), grid_size));
-    C = [x1_grid(:), x2_grid(:)];
-    C = C(1:R, :);
-    
-    % Simulacija cluster_idx za grid-based pristop
-    distances = pdist2(relevant_inputs, C);
-    [~, cluster_idx] = min(distances, [], 2);
-end
+% Parametri za FCM
+fcm_options = [2.0;     % fuzziness parameter (m) - običajno 2.0
+               100;     % max iterations
+               1e-5;    % min improvement
+               1];      % verbose flag
 
-% 2. KORAK: Določitev širine membership funkcij na podlagi podatkov v vsakem clustru
-fprintf('Korak 2: Določitev širine membership funkcij...\n');
-O = zeros(R, 2);
-for i = 1:R
-    cluster_data = relevant_inputs(cluster_idx == i, :);
-    if size(cluster_data, 1) > 1
-        % Izračunaj standardni odklon v vsakem clustru
-        O(i, :) = std(cluster_data, 0, 1);
-        % Če je std. odklon premajhen, nastavi minimalno vrednost
-        O(i, :) = max(O(i, :), 0.1);
-    else
-        % Če je v clustru samo ena točka, uporabi povprečno razdaljo do sosedov
-        distances = pdist2(C(i, :), C);
-        distances(i) = inf; % Izključi razdaljo do sebe
-        O(i, :) = min(distances) / 2;
+try
+    % Fuzzy C-means clustering 
+    [centers_fcm, U, obj_fcn] = fcm(relevant_inputs', R, fcm_options);
+    C = centers_fcm;  % Centri so že v pravilni dimenziji
+    
+    % Določi cluster pripadnost na podlagi največje membership vrednosti
+    [~, cluster_idx] = max(U, [], 1);
+    cluster_idx = cluster_idx';
+    
+    fprintf('FCM uspešno izvršen z %d centri.\n', R);
+    fprintf('Objektna funkcija: %.6f\n', obj_fcn(end));
+    
+catch ME
+    % Fallback na K-means, če FCM ne deluje
+    fprintf('FCM ni uspel (%s), uporabljam K-means fallback...\n', ME.message);
+    try
+        [cluster_idx, C] = kmeans(relevant_inputs, R, 'MaxIter', 300, 'Replicates', 3);
+        fprintf('K-means fallback uspešen.\n');
+    catch ME2
+        % Končni fallback na grid-based inicializacijo
+        fprintf('K-means tudi ni uspel (%s), uporabljam grid-based inicializacijo...\n', ME2.message);
+        input_min = min(relevant_inputs);
+        input_max = max(relevant_inputs);
+        grid_size = ceil(sqrt(R));
+        [x1_grid, x2_grid] = meshgrid(linspace(input_min(1), input_max(1), grid_size), ...
+                                      linspace(input_min(2), input_max(2), grid_size));
+        C = [x1_grid(:), x2_grid(:)];
+        C = C(1:R, :);
+        
+        % Simulacija cluster_idx za grid-based pristop
+        distances = pdist2(relevant_inputs, C);
+        [~, cluster_idx] = min(distances, [], 2);
     end
 end
 
-% Alternativni pristop za širine, če zgoraj ne deluje dobro
+% 2. KORAK: Določitev širine membership funkcij na podlagi FCM rezultatov
+fprintf('Korak 2: Določitev širine membership funkcij na podlagi FCM...\n');
+O = zeros(R, 2);
+
+if exist('U', 'var')
+    % Če imamo FCM membership matrike, uporabi jih za izračun širin
+    for i = 1:R
+        % Uteženi standardni odklon na podlagi membership vrednosti
+        weights = U(i, :)';  % Membership vrednosti za cluster i
+        weights = weights / sum(weights);  % Normalizacija
+        
+        % Uteženo povprečje
+        weighted_mean = sum(weights .* relevant_inputs, 1);
+        
+        % Utežena varianca
+        diff_sq = (relevant_inputs - weighted_mean).^2;
+        weighted_var = sum(weights .* diff_sq, 1);
+        O(i, :) = sqrt(weighted_var);
+        
+        % Nastavi minimalno širino
+        O(i, :) = max(O(i, :), 0.1);
+    end
+else
+    % Fallback na standardni pristop z hard clustering
+    for i = 1:R
+        cluster_data = relevant_inputs(cluster_idx == i, :);
+        if size(cluster_data, 1) > 1
+            O(i, :) = std(cluster_data, 0, 1);
+            O(i, :) = max(O(i, :), 0.1);
+        else
+            distances = pdist2(C(i, :), C);
+            distances(i) = inf;
+            O(i, :) = min(distances) / 2;
+        end
+    end
+end
+
+% Zagotovi smiselne širine z alternativnim pristopom
 distances_between_centers = pdist(C);
 if ~isempty(distances_between_centers)
     avg_distance = mean(distances_between_centers);
-    % Nastavi širine kot funkcijo povprečne razdalje med centri
-    O = max(O, avg_distance/3);
+    O = max(O, avg_distance/4);  % Nekoliko manjše kot pri K-means
 end
 
-% 3. KORAK: Določitev uteži W in biasov b z linearno regresijo za vsak cluster
-fprintf('Korak 3: Določitev uteži z linearno regresijo...\n');
+% 3. KORAK: Določitev uteži W in biasov b z uteženo linearno regresijo
+fprintf('Korak 3: Določitev uteži z uteženo linearno regresijo...\n');
 W = zeros(R, 4);
 b = zeros(R, 1);
 
-for i = 1:R
-    cluster_data_idx = (cluster_idx == i);
-    
-    if sum(cluster_data_idx) > 4  % Potrebujemo vsaj 4 vzorce za 4 parametre
-        X_cluster = X_shifted(cluster_data_idx, :);
-        Y_cluster = Y_shifted(cluster_data_idx);
+if exist('U', 'var')
+    % Uporabi FCM membership vrednosti za uteženo regresijo
+    for i = 1:R
+        weights = U(i, :)';  % Membership vrednosti za cluster i
         
-        % Linearni regresijski problem: Y = X*w + b
-        % Razširimo X z dodatnim stolpcem enic za bias
-        X_extended = [X_cluster, ones(size(X_cluster, 1), 1)];
+        % Utežena linearna regresija
+        W_diag = diag(weights);  % Utežna matrika
+        X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
         
-        % Rešimo z metodo najmanjših kvadratov
         try
-            weights = X_extended \ Y_cluster;  % [w1, w2, w3, w4, b]
-            W(i, :) = weights(1:4)';
-            b(i) = weights(5);
-        catch
-            % Fallback na regularizovano regresijo, če je matrika singularna
+            % Utežena metoda najmanjših kvadratov: (X'WX)^(-1)X'WY
+            XTW = X_extended' * W_diag;
+            XTWX = XTW * X_extended;
+            XTWY = XTW * Y_shifted;
+            
+            % Dodaj regularizacijo za numerično stabilnost
             lambda = 1e-6;
-            weights = (X_extended' * X_extended + lambda * eye(5)) \ (X_extended' * Y_cluster);
+            coeffs = (XTWX + lambda * eye(size(XTWX))) \ XTWY;
+            
+            W(i, :) = coeffs(1:4)';
+            b(i) = coeffs(5);
+            
+        catch
+            fprintf('Utežena regresija za cluster %d ni uspela, uporabljam običajno regresijo.\n', i);
+            % Fallback na običajno regresijo
+            X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
+            coeffs = X_extended \ Y_shifted;
+            W(i, :) = coeffs(1:4)';
+            b(i) = coeffs(5);
+        end
+    end
+else
+    % Fallback na hard clustering regresijo
+    for i = 1:R
+        cluster_data_idx = (cluster_idx == i);
+        
+        if sum(cluster_data_idx) > 4
+            X_cluster = X_shifted(cluster_data_idx, :);
+            Y_cluster = Y_shifted(cluster_data_idx);
+            
+            X_extended = [X_cluster, ones(size(X_cluster, 1), 1)];
+            
+            try
+                weights = X_extended \ Y_cluster;
+                W(i, :) = weights(1:4)';
+                b(i) = weights(5);
+            catch
+                lambda = 1e-6;
+                weights = (X_extended' * X_extended + lambda * eye(5)) \ (X_extended' * Y_cluster);
+                W(i, :) = weights(1:4)';
+                b(i) = weights(5);
+            end
+        else
+            fprintf('Cluster %d ima premalo podatkov (%d), uporabljam globalno regresijo.\n', i, sum(cluster_data_idx));
+            X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
+            weights = X_extended \ Y_shifted;
             W(i, :) = weights(1:4)';
             b(i) = weights(5);
         end
-    else
-        % Če ni dovolj podatkov, uporabi globalno regresijo
-        fprintf('Cluster %d ima premalo podatkov (%d), uporabljam globalno regresijo.\n', i, sum(cluster_data_idx));
-        X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
-        weights = X_extended \ Y_shifted;
-        W(i, :) = weights(1:4)';
-        b(i) = weights(5);
     end
 end
 
 % 4. KORAK: Prikaz rezultatov inicializacije
-fprintf('\n=== REZULTATI INICIALIZACIJE ===\n');
+fprintf('\n=== REZULTATI FCM INICIALIZACIJE ===\n');
 fprintf('Število pravil: %d\n', R);
 fprintf('Centri membership funkcij:\n');
 for i = 1:min(5, R)
@@ -273,6 +341,17 @@ for i = 1:min(5, R)
 end
 if R > 5
     fprintf('  ... in %d dodatnih pravil\n', R-5);
+end
+
+% Dodatne informacije o FCM
+if exist('U', 'var')
+    fprintf('\nFCM membership statistike:\n');
+    for i = 1:min(3, R)
+        max_membership = max(U(i, :));
+        avg_membership = mean(U(i, :));
+        fprintf('  Pravilo %d: Max membership=%.3f, Avg membership=%.3f\n', ...
+                i, max_membership, avg_membership);
+    end
 end
 
 % 5. KORAK: Evaluacija modela na treninskih podatkih
@@ -290,7 +369,7 @@ ss_tot = sum((Y_shifted - mean(Y_shifted)).^2);
 r_squared = 1 - (ss_res / ss_tot);
 fprintf('R² (koeficient determinacije): %.4f\n', r_squared);
 
-fprintf('=== K-MEANS CLUSTERING KONČAN ===\n\n');
+fprintf('=== FUZZY C-MEANS CLUSTERING KONČAN ===\n\n');
 
 
 % SIMULATION MODE
