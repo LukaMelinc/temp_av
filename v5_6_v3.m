@@ -171,20 +171,126 @@ save('APRBS_signal.mat', 'X_shifted', "Y_shifted", "Y_test", "y_test", "u_test")
 load("APRBS_signal.mat")
 
 TS
-% Parametri TS modela
-R = 10; % Število podfunkcij
-C = rand(R, 2);  % Centri funkcij
-O = rand(R, 1);  % Širine podfunkcij
-W = rand(R, 4);  % Uteži linearnih funkcij
-b = rand(R, 1);  % Biasi linearnih funkcij
-learning_rate = 0.0001; % Learning rate
-epochs = 100; % Število učnih epoh
+R = 6; % Število podfunkcij (povečano za boljšo kompleksnost)
 
-% Membership funckija pove, koliko posamezno pravilo doprinese k končnemu
-% izhodu funkcije
+fprintf('=== TAKAGI-SUGENO MODEL Z K-MEANS CLUSTERING ===\n');
 
-% trening TS modela
-[C, O, W, b] = TS_train(C, O, W, b, X_shifted, Y_shifted, learning_rate, epochs);
+% 1. KORAK: K-means clustering za določitev centrov membership funkcij
+fprintf('Korak 1: K-means clustering za center membership funkcij...\n');
+relevant_inputs = X_shifted(:, 3:4);  % Samo -y(k-1) in -y(k-2) za membership funkcije
+
+try
+    % K-means clustering z večimi poskusi za boljšo inicializacijo
+    [cluster_idx, C] = kmeans(relevant_inputs, R, 'MaxIter', 300, 'Replicates', 5, 'Distance', 'sqeuclidean');
+    fprintf('K-means uspešno izvršen z %d centri.\n', R);
+catch ME
+    % Fallback na grid-based inicializacijo, če k-means ne deluje
+    fprintf('K-means ni uspel (%s), uporabljam grid-based inicializacijo...\n', ME.message);
+    input_min = min(relevant_inputs);
+    input_max = max(relevant_inputs);
+    grid_size = ceil(sqrt(R));
+    [x1_grid, x2_grid] = meshgrid(linspace(input_min(1), input_max(1), grid_size), ...
+                                  linspace(input_min(2), input_max(2), grid_size));
+    C = [x1_grid(:), x2_grid(:)];
+    C = C(1:R, :);
+    
+    % Simulacija cluster_idx za grid-based pristop
+    distances = pdist2(relevant_inputs, C);
+    [~, cluster_idx] = min(distances, [], 2);
+end
+
+% 2. KORAK: Določitev širine membership funkcij na podlagi podatkov v vsakem clustru
+fprintf('Korak 2: Določitev širine membership funkcij...\n');
+O = zeros(R, 2);
+for i = 1:R
+    cluster_data = relevant_inputs(cluster_idx == i, :);
+    if size(cluster_data, 1) > 1
+        % Izračunaj standardni odklon v vsakem clustru
+        O(i, :) = std(cluster_data, 0, 1);
+        % Če je std. odklon premajhen, nastavi minimalno vrednost
+        O(i, :) = max(O(i, :), 0.1);
+    else
+        % Če je v clustru samo ena točka, uporabi povprečno razdaljo do sosedov
+        distances = pdist2(C(i, :), C);
+        distances(i) = inf; % Izključi razdaljo do sebe
+        O(i, :) = min(distances) / 2;
+    end
+end
+
+% Alternativni pristop za širine, če zgoraj ne deluje dobro
+distances_between_centers = pdist(C);
+if ~isempty(distances_between_centers)
+    avg_distance = mean(distances_between_centers);
+    % Nastavi širine kot funkcijo povprečne razdalje med centri
+    O = max(O, avg_distance/3);
+end
+
+% 3. KORAK: Določitev uteži W in biasov b z linearno regresijo za vsak cluster
+fprintf('Korak 3: Določitev uteži z linearno regresijo...\n');
+W = zeros(R, 4);
+b = zeros(R, 1);
+
+for i = 1:R
+    cluster_data_idx = (cluster_idx == i);
+    
+    if sum(cluster_data_idx) > 4  % Potrebujemo vsaj 4 vzorce za 4 parametre
+        X_cluster = X_shifted(cluster_data_idx, :);
+        Y_cluster = Y_shifted(cluster_data_idx);
+        
+        % Linearni regresijski problem: Y = X*w + b
+        % Razširimo X z dodatnim stolpcem enic za bias
+        X_extended = [X_cluster, ones(size(X_cluster, 1), 1)];
+        
+        % Rešimo z metodo najmanjših kvadratov
+        try
+            weights = X_extended \ Y_cluster;  % [w1, w2, w3, w4, b]
+            W(i, :) = weights(1:4)';
+            b(i) = weights(5);
+        catch
+            % Fallback na regularizovano regresijo, če je matrika singularna
+            lambda = 1e-6;
+            weights = (X_extended' * X_extended + lambda * eye(5)) \ (X_extended' * Y_cluster);
+            W(i, :) = weights(1:4)';
+            b(i) = weights(5);
+        end
+    else
+        % Če ni dovolj podatkov, uporabi globalno regresijo
+        fprintf('Cluster %d ima premalo podatkov (%d), uporabljam globalno regresijo.\n', i, sum(cluster_data_idx));
+        X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
+        weights = X_extended \ Y_shifted;
+        W(i, :) = weights(1:4)';
+        b(i) = weights(5);
+    end
+end
+
+% 4. KORAK: Prikaz rezultatov inicializacije
+fprintf('\n=== REZULTATI INICIALIZACIJE ===\n');
+fprintf('Število pravil: %d\n', R);
+fprintf('Centri membership funkcij:\n');
+for i = 1:min(5, R)
+    fprintf('  Pravilo %d: Center=[%.3f, %.3f], Širina=[%.3f, %.3f]\n', ...
+            i, C(i,1), C(i,2), O(i,1), O(i,2));
+end
+if R > 5
+    fprintf('  ... in %d dodatnih pravil\n', R-5);
+end
+
+% 5. KORAK: Evaluacija modela na treninskih podatkih
+fprintf('\nKorak 4: Evaluacija modela...\n');
+Y_train_pred = TS_eval(C, O, W, b, X_shifted');
+mae_train = mean(abs(Y_shifted - Y_train_pred'));
+rmse_train = sqrt(mean((Y_shifted - Y_train_pred').^2));
+
+fprintf('MAE na treninskih podatkih: %.6f\n', mae_train);
+fprintf('RMSE na treninskih podatkih: %.6f\n', rmse_train);
+
+% Izračunaj R² (koeficient determinacije)
+ss_res = sum((Y_shifted - Y_train_pred').^2);
+ss_tot = sum((Y_shifted - mean(Y_shifted)).^2);
+r_squared = 1 - (ss_res / ss_tot);
+fprintf('R² (koeficient determinacije): %.4f\n', r_squared);
+
+fprintf('=== K-MEANS CLUSTERING KONČAN ===\n\n');
 
 
 % SIMULATION MODE
@@ -272,14 +378,12 @@ title("Referencni signal");
 xlabel("Cas [s]");
 ylabel("Kot [deg]");
 
-
 % Simulation parametri
 casovniKorak = 0.01;
 % Parametri simulacije
 Ts = 0.01;  % Vzorec (Sample time)
 N_sim = 10000;  % Število simulacijskih korakov
 H = 3;  % Število upoštevanih členov
-
 
 
 
@@ -294,11 +398,9 @@ y_ref = zeros(1, N_sim);            % referencni signal
 
 
 % Integration and derivative component ADD
-xi = 0;
-Ki = 0.001;
-Kd = 10;
 
-previous_error = 0;
+
+H = 10;
 
 for k = 3:N_sim
     % Izračun napake
@@ -397,17 +499,15 @@ end
 
 % Funkcija treninga TS modela
 function [C, O, W, b] = TS_train(C, O, W, b, X_train_normalized, Y_train_normalized, learning_rate, epochs)
-    for epoch = 1:epochs % Iteracije skozi trening epohe
+    for epoch = 1:epochs
         total_loss = 0;  
-        for i = 1:size(X_train_normalized, 1) % Iteracija skozi trening sample
+        for i = 1:size(X_train_normalized, 1)
+            % FIX: Add these missing lines
             X = X_train_normalized(i, :);
             Y = Y_train_normalized(i);
 
             % Izračun pripadnosti posameznim funckijam
-            % Računa glede na razdaljo med vhodnimi značilkami (3, 4) in
-            % centrom, normalizirano z širino O
-            membership_values = exp(-0.5 * sum((X(3:4) - C).^2 ./ (O.^2), 2)); %-> Gaussova funkcija pripadnosti
-
+            membership_values = exp(-0.5 * sum((X(3:4) - C).^2 ./ (O.^2), 2));
             % Prevent division by very small numbers
             % fallback - da se ne deli z zelo majhnimi vrednostmi
             if sum(membership_values) < 1e-3
@@ -500,5 +600,6 @@ function [A_state, B_state, C_state, R_state] = Convert(centers, spreads, weight
         R_state = R_state + membershipValues(ruleIndex) * R_rule;
     end
 end
+
 
 
