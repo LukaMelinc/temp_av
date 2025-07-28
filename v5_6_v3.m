@@ -52,12 +52,7 @@ xlabel("Vhodni signal [V]");
 ylabel("Izhodni signal [V]");
 
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% APRBS %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-
+APRBS
 
 N = 4000;        % ŠT. aprbs samplov
 amplitude = 2; % 2   % amplituda napetosti
@@ -111,14 +106,8 @@ xlabel('Čas [s]');
 ylabel('Izhod sistema');
 grid on;
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Priprava dataseta %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
 
-
-
+Priprava dataseta
 y_train = y_train';
 y_test = y_test';
 
@@ -135,57 +124,45 @@ X_shifted = X_train(perm, :);
 Y_shifted = Y_train(perm, :);
 
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Nevronska mreža %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-
+Nevronska mreža
 % Nevronska mreža arhitektura - dva layerja sigmoide in linearna funckija
-%net = feedforwardnet([15, 10, 5]);
-%net.layers{1}.transferFcn = 'logsig';
-%net.layers{2}.transferFcn = 'logsig';
-%net.layers{3}.transferFcn = 'purelin';
-%net.trainParam.showWindow = false;  
-%net.trainParam.goal = 1e-7;  % Cilj, da mreža doseže takšn MAE
-%
-%[net, ~] = train(net, X_shifted', Y_shifted'); % Trening mreže net - nadzorovano učenje
-%% Vrne treniran network net in log treninga (spustimo)
-%
-%% Priprava inputov in outputov za sim
-%X_sim = X_test(1, :);
-%Y_sim = [];
-%
-%% Simuliramo odziv mreže
-%for i = 3:length(u_test)   % Od tretjega sampla naprej
-%    y = net(X_sim');
-%    Y_sim = [Y_sim; y];
-%    X_sim = [u_test(i), u_test(i-1), -y, X_sim(3)];   % Update vhoda za naslednji korak
-%end
-%
-% % MAE
-%mae_nn = mean(abs(Y_test - Y_sim));
-%fprintf('MAE nevronske mreže: %.4f\n', mae_nn);
-%
-%% Plot actual vs simulated neural network response
-%figure('Position', [100, 100, 1200, 800]);
-%
-%plot(Y_test);
-%title("Primerjava odzivov - simuliran vs NN");
-%hold on;
-%plot(Y_sim);
-%
-%xlabel("Sample");
-%ylabel("Odziv [V]");
-%legend('Dejanski odziv', 'Napovedan odziv');
-%grid on;
-%
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Save and load dataset %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
+net = feedforwardnet([15, 10, 5]);
+net.layers{1}.transferFcn = 'logsig';
+net.layers{2}.transferFcn = 'logsig';
+net.layers{3}.transferFcn = 'purelin';
+net.trainParam.showWindow = false;  
+net.trainParam.goal = 1e-7;  % Cilj, da mreža doseže takšn MAE
 
+[net, ~] = train(net, X_shifted', Y_shifted'); % Trening mreže net - nadzorovano učenje
+% Vrne treniran network net in log treninga (spustimo)
+
+% Priprava inputov in outputov za sim
+X_sim = X_test(1, :);
+Y_sim = [];
+
+% Simuliramo odziv mreže
+for i = 3:length(u_test)   % Od tretjega sampla naprej
+    y = net(X_sim');
+    Y_sim = [Y_sim; y];
+    X_sim = [u_test(i), u_test(i-1), -y, X_sim(3)];   % Update vhoda za naslednji korak
+end
+
+ % MAE
+mae_nn = mean(abs(Y_test - Y_sim));
+fprintf('MAE nevronske mreže: %.4f\n', mae_nn);
+
+% Plot actual vs simulated neural network response
+figure('Position', [100, 100, 1200, 800]);
+
+plot(Y_test);
+title("Primerjava odzivov - simuliran vs NN");
+hold on;
+plot(Y_sim);
+
+xlabel("Sample");
+ylabel("Odziv [V]");
+legend('Dejanski odziv', 'Napovedan odziv');
+grid on;
 
 
 save('APRBS_signal.mat', 'X_shifted', "Y_shifted", "Y_test", "y_test", "u_test");
@@ -193,19 +170,14 @@ save('APRBS_signal.mat', 'X_shifted', "Y_shifted", "Y_test", "y_test", "u_test")
 
 load("APRBS_signal.mat")
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Takagi sugeno %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-
+TS
 % Parametri TS modela
 R = 10; % Število podfunkcij
 C = rand(R, 2);  % Centri funkcij
 O = rand(R, 1);  % Širine podfunkcij
 W = rand(R, 4);  % Uteži linearnih funkcij
 b = rand(R, 1);  % Biasi linearnih funkcij
-learning_rate = 0.001; % Learning rate
+learning_rate = 0.0001; % Learning rate
 epochs = 100; % Število učnih epoh
 
 % Membership funckija pove, koliko posamezno pravilo doprinese k končnemu
@@ -259,13 +231,7 @@ grid on;
 hold off;
 
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Naloga 6 (MPC)%
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-
-
+Naloga 6
 N = 4000;        % ŠT. aprbs samplov
 %amplitude = 2;   % amplituda napetosti
 Ts = 0.01;       % Sampling 
@@ -315,6 +281,8 @@ N_sim = 10000;  % Število simulacijskih korakov
 H = 3;  % Število upoštevanih členov
 
 
+
+
 % Inicializacija stanj in vhodnih signalov
 x_ref = 0; % Začetno stanje reference
 x_model = [0; 0]; % začetno stanje modela sistema
@@ -332,40 +300,32 @@ Kd = 10;
 
 previous_error = 0;
 
-% Koeficienti za funkcijski regulator
 for k = 3:N_sim
     % Izračun napake
     y_ref(k) = C_ref * x_ref;  % Izhod referenčnega sistema -> C matrika * referenčni vhod
-    e = referencniSignal(k) - y_process(k-1);  % Napaka glede na proces, na zaćetku je y_process = 0
-
-
-    xi = xi + e;
-
-    % Calculate derivative term
-    derivative_term = Kd * (e - previous_error);
-
-    % Update previous error
-    previous_error = e;
-
-
-    % Izračunovanje matrik sistema na podlagi TS modela za trenutno stanje modela
+    
+    % Izračunovanje matrik sistema na podlagi TS modela za trenutno stanje
     [A_m, B_m, C_m, R_m] = Convert(C, O, W, b, [-y_process(k-1); -y_process(k-2)]);
-
-    % Prediktivni regulator -> regulirni zakon iz worda
+    
+    % MPC Control Law (replace PID)
+    % Calculate step response matrix G0 for horizon H
     G0 = C_m * (A_m^H - eye(size(A_m))) * pinv(A_m - eye(size(A_m))) * B_m;
+    
+    % Calculate control gain G
     G = pinv(G0) * (1 - A_ref^H);
-
-   
-    % Posodobitev stanj za referenčni, modelni in procesni sistem
+    
+    % MPC control signal calculation
+    error = referencniSignal(k) - y_process(k-1);  % Current tracking error
+    
+    % MPC control law (similar to main6.m)
+    u(k) = G * error + pinv(G0) * y_model(k-1) - pinv(G0) * C_m * (A_m^H) * x_model - pinv(B_m) * R_m;
+    
+    % Update states
     x_ref = A_ref * x_ref + B_ref * referencniSignal(k);
     x_model = A_m * x_model + B_m * u(k) + R_m;
     y_model(k) = C_m * x_model;
-
-     % Krmilni signal - regulirni zakon
-    u(k) = G * e + xi * Ki + derivative_term + pinv(G0) * y_model(k-1) - pinv(G0) * C_m * (A_m^H) * x_model - pinv(B_m) * R_m;
-
-
-    % Procesni model (Helicrane)
+    
+    % Update process (Helicrane)
     [x_process(2), x_process(1)] = helicrane(u(k), x_process);
     y_process(k) = x_process(2);
 end
@@ -388,12 +348,7 @@ title('Odziv sistema');
 xlabel('Čas [s]');
 ylabel('Kot [stopinje]');
 
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-% Funkcije %
-%%% ----------------------------------- %%%
-%%% ----------------------------------- %%%
-
+Formule
 % Funckija za poganjanje modela sistema - helikotper
 function [y] = simulateHelicrane(x, u, t)
 % x - stanje sistema, u - vhod v sistem, t - časovni vektor
@@ -517,28 +472,33 @@ end
 
 
 function [A_state, B_state, C_state, R_state] = Convert(centers, spreads, weights, offsets, input)
-
     % Prevajanje TS modela v prostor stanj
-
+    
     numRules = size(centers, 1);  % Število funkcij
-    [A_state, B_state, C_state, R_state] = deal(zeros(2, 2), zeros(2, 1), zeros(1, 2), zeros(2, 1));
+    
+    % Initialize matrices
+    A_state = zeros(2, 2);
+    B_state = zeros(2, 1);
+    C_state = zeros(1, 2);
+    R_state = zeros(2, 1);
 
+    % Calculate membership values
     membershipValues = exp(-0.5 * sum((input' - centers).^2 ./ (spreads.^2), 2));  % Gaussian membership
-    membershipValues = membershipValues / sum(membershipValues);  % Normalizcija membershipov
+    membershipValues = membershipValues / sum(membershipValues);  % Normalization
 
-    % Sestavitev matrik stanja
+    % Weighted combination of rule matrices
     for ruleIndex = 1:numRules
-        A_rule = [0, -weights(ruleIndex, 4); 1, -weights(ruleIndex, 3)];  % 2x2, uteži po diagonali -> Dinamika sistema
-        B_rule = [weights(ruleIndex, 2); weights(ruleIndex, 1)]; % 2x1 -> vpliv vhoda na stanje
-        C_rule = [0, 1];
-        R_rule = [0; offsets(ruleIndex)];  % Deviacija dinamike za funkcijo
+        A_rule = [0, -weights(ruleIndex, 4); 1, -weights(ruleIndex, 3)];  % 2x2 system dynamics
+        B_rule = [weights(ruleIndex, 2); weights(ruleIndex, 1)]; % 2x1 input influence
+        C_rule = [0, 1]; % 1x2 output matrix
+        R_rule = [0; offsets(ruleIndex)];  % 2x1 offset vector
 
-        % Posodobitev matrik prostora stanj za posamezno pravilo
+        % Weighted sum of matrices
         A_state = A_state + membershipValues(ruleIndex) * A_rule;
         B_state = B_state + membershipValues(ruleIndex) * B_rule;
         C_state = C_state + membershipValues(ruleIndex) * C_rule;
         R_state = R_state + membershipValues(ruleIndex) * R_rule;
     end
-    input=0;
-    
 end
+
+
