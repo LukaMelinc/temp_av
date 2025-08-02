@@ -204,30 +204,13 @@ fprintf('clustering_data size: [%d, %d]\n', size(clustering_data));
 fprintf('num_clusters: %d\n', num_clusters);
 
 
-[U, centers, ~] = fcm(clustering_data, num_clusters, [2, 100, 1e-5, 0]);
+[Centers, U, O] = fcm(num_clusters, clustering_data);
 
-sigmas = zeros(num_clusters, 2);
+fprintf('U size: [%d, %d]\n', size(U));
+fprintf('centers size: [%d, %d]\n', size(Centers));
+fprintf('sigmas size: [%d, %d]\n', size(O));
 
-for i = 1:num_clusters
-    % Get membership values for cluster i (transpose to get column vector)
-    memberships = U(i, :)';  % [N x 1]
-    
-    % Normalize memberships
-    memberships = memberships / sum(memberships);
-    
-    % Calculate weighted mean for this cluster
-    weighted_mean = sum(memberships .* clustering_data, 1);  % [1 x 2]
-    
-    % Calculate weighted variance for each dimension
-    for dim = 1:2
-        diff_sq = (clustering_data(:, dim) - weighted_mean(dim)).^2;
-        weighted_variance = sum(memberships .* diff_sq);
-        sigmas(i, dim) = sqrt(weighted_variance + 0.1);  % Add small value for stability
-    end
-end
-
-% Use reasonable sigmas (not the huge ones from FCM)
-spreads = sigmas;
+%spreads = sigmas;  % FCM already calculated optimal spreads
 
 
 %% Step 4: Calculate Membership Functions - FIXED
@@ -235,8 +218,8 @@ fprintf('Calculating membership functions...\n');
 membership_functions = zeros(num_clusters, size(clustering_data, 1));
 
 for i = 1:num_clusters
-    diff = clustering_data - centers(i, :);  % Now should work: [4198×2] - [1×2]
-    membership_functions(i, :) = exp(-0.5 * sum((diff ./ spreads(i, :)).^2, 2))';
+    diff = clustering_data - Centers(i, :);  % Now should work: [4198×2] - [1×2]
+    membership_functions(i, :) = exp(-0.5 * sum((diff ./ O(i, :)).^2, 2))';
 end
 
 % Normalize memberships
@@ -262,30 +245,50 @@ end
 
 %% Step 6: Simulation
 fprintf('Testing TS model...\n');
-y_ts_sim = zeros(length(Y_test), 1);
 
-for j = 1:length(Y_test)
-    current_state = X_test(j, 3:4);  % Past outputs
-    current_input = [X_test(j, :), 1];  % All inputs + constant
+% Initialize simulation output vector
+Y_ts_simulated = zeros(length(Y_test), 1);
+% Simulation loop
+for i = 1:length(Y_test)
+    if i == 1
+        % For first prediction, use actual test data
+        y_prev1 = -y_test(i+2);  % -y_test(3) 
+        y_prev2 = -y_test(i+1);  % -y_test(2)
+    elseif i == 2
+        % For second prediction, use one simulated and one actual
+        y_prev1 = -Y_ts_simulated(i-1);  % Use previous simulation
+        y_prev2 = -y_test(i+1);          % Still use actual y_test(3)
+    else
+        % For all subsequent predictions, use simulated values
+        y_prev1 = -Y_ts_simulated(i-1);  % Previous simulated output
+        y_prev2 = -Y_ts_simulated(i-2);  % Two steps back simulated output
+    end
     
-    % Calculate firing strengths
+    % Construct current input vector [u(k), u(k-1), -y(k-1), -y(k-2)]
+    current_state = [y_prev1, y_prev2];  % Past outputs (already negated)
+    current_input = [u_test(i+2), u_test(i+1), current_state];  % All inputs
+    
+    % Calculate firing strengths using simulated state
     firing_strengths = zeros(num_clusters, 1);
-    for i = 1:num_clusters
-        diff = current_state - centers(i, :);
-        firing_strengths(i) = exp(-0.5 * sum((diff ./ spreads(i, :)).^2));
+    for j = 1:num_clusters
+        diff = current_state - Centers(j, :);
+        firing_strengths(j) = exp(-0.5 * sum((diff ./ O(j, :)).^2));
     end
     
     % Normalize firing strengths
+    if sum(firing_strengths) < 1e-6
+        firing_strengths = firing_strengths + 1e-6;
+    end
     firing_strengths = firing_strengths / sum(firing_strengths);
     
     % Calculate rule outputs and final prediction
-    rule_outputs = rule_parameters * current_input';
-    y_ts_sim(j) = sum(firing_strengths .* rule_outputs);
+    rule_outputs = rule_parameters * [current_input, 1]';  % Add constant term
+    Y_ts_simulated(i) = sum(firing_strengths .* rule_outputs);
 end
 
-%% Step 7: Evaluate Performance
-mae_ts = mean(abs(Y_test - y_ts_sim));
-rmse_ts = sqrt(mean((Y_test - y_ts_sim).^2));
+%% Evaluate Simulation Performance
+mae_ts_sim = mean(abs(Y_test - Y_ts_simulated));
+rmse_ts_sim = sqrt(mean((Y_test - Y_ts_simulated).^2));
 
 fprintf('TS Model Performance:\n');
 fprintf('  MAE: %.4f\n', mae_ts);
@@ -305,8 +308,8 @@ grid on;
 fprintf('=== TS MODEL COMPLETED ===\n\n');
 
 % Store the TS model parameters for later use in your Convert function
-C = centers;     % For your Convert function
-O = spreads;     % For your Convert function  
+C = Centers;     % For your Convert function
+O = O;     % For your Convert function  
 W = rule_parameters(:, 1:4);  % Weights (without constant term)
 b = rule_parameters(:, 5);    % Biases (constant terms)
 
