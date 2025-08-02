@@ -52,12 +52,10 @@ xlabel("Vhodni signal [V]");
 ylabel("Izhodni signal [V]");
 
 
-APRBS
-
 N = 4000;        % ŠT. aprbs samplov
 amplitude = 2; % 2   % amplituda napetosti
 Ts = 0.01;       % Sampling 
-Th = 0.15;       % Hrizont spreminjanja aprbs signala
+Th = 0.5;       % Hrizont spreminjanja aprbs signala
 padding = 200;   % paddanje signala pred/po signalu
 
 % generiranje aprbs signala
@@ -68,6 +66,9 @@ padding = 200;   % paddanje signala pred/po signalu
 y_train = simulateHelicrane([0 0],u_train,t_train);
 y_test = simulateHelicrane([0 0],u_test,t_test);
 
+
+%u_train = u_train - 0.5;  % Now ranges approximately -0.5 to +0.5
+%u_test = u_test - 0.5;
 
 % Grafi vzbujalnega signala in odziva sistema na odziv
 
@@ -171,249 +172,143 @@ save('APRBS_signal.mat', 'X_shifted', "Y_shifted", "Y_test", "y_test", "u_test")
 load("APRBS_signal.mat")
 
 TS
-R = 6; % Število podfunkcij (povečano za boljšo kompleksnost)
+% Replace your entire TS section with this simple code:
 
-fprintf('=== TAKAGI-SUGENO MODEL Z FUZZY C-MEANS CLUSTERING ===\n');
+fprintf('=== SIMPLE TAKAGI-SUGENO MODEL ===\n');
 
-% 1. KORAK: Fuzzy C-means clustering za določitev centrov membership funkcij
-fprintf('Korak 1: Fuzzy C-means clustering za center membership funkcij...\n');
-relevant_inputs = X_shifted(:, 3:4);  % Samo -y(k-1) in -y(k-2) za membership funkcije
+%% Step 1: Use the correct data (from centered signals)
+% Problem: You're using y_train from BEFORE centering u_train
+% Solution: Re-simulate with centered signals or use the prepared data
 
-% Parametri za FCM
-fcm_options = [2.0;     % fuzziness parameter (m) - običajno 2.0
-               100;     % max iterations
-               1e-5;    % min improvement
-               1];      % verbose flag
+% Use your existing prepared data
+clustering_data = X_shifted(:, 3:4);  % Past outputs for clustering
+regression_data = [X_shifted, ones(size(X_shifted, 1), 1)];  % All vars + constant
 
-try
-    % Fuzzy C-means clustering 
-    [centers_fcm, U, obj_fcn] = fcm(relevant_inputs', R, fcm_options);
-    C = centers_fcm;  % Centri so že v pravilni dimenziji
+fprintf('Using %d training samples\n', size(X_shifted, 1));
+
+%% Step 2: Check data diversity and adjust clusters
+unique_points = unique(round(clustering_data, 2), 'rows');
+max_clusters = size(unique_points, 1) - 1;
+num_clusters = min(4, max_clusters);  % Start with 4 or less
+
+fprintf('Unique data points: %d, Using %d clusters\n', size(unique_points, 1), num_clusters);
+
+if num_clusters < 2
+    error('Not enough data diversity. Check your APRBS signal generation.');
+end
+
+%% Step 3: FCM Clustering  
+fprintf('Performing FCM clustering...\n');
+
+fprintf('clustering_data size: [%d, %d]\n', size(clustering_data));
+fprintf('num_clusters: %d\n', num_clusters);
+
+
+[U, centers, ~] = fcm(clustering_data, num_clusters, [2, 100, 1e-5, 0]);
+
+sigmas = zeros(num_clusters, 2);
+
+for i = 1:num_clusters
+    % Get membership values for cluster i (transpose to get column vector)
+    memberships = U(i, :)';  % [N x 1]
     
-    % Določi cluster pripadnost na podlagi največje membership vrednosti
-    [~, cluster_idx] = max(U, [], 1);
-    cluster_idx = cluster_idx';
+    % Normalize memberships
+    memberships = memberships / sum(memberships);
     
-    fprintf('FCM uspešno izvršen z %d centri.\n', R);
-    fprintf('Objektna funkcija: %.6f\n', obj_fcn(end));
+    % Calculate weighted mean for this cluster
+    weighted_mean = sum(memberships .* clustering_data, 1);  % [1 x 2]
     
-catch ME
-    % Fallback na K-means, če FCM ne deluje
-    fprintf('FCM ni uspel (%s), uporabljam K-means fallback...\n', ME.message);
-    try
-        [cluster_idx, C] = kmeans(relevant_inputs, R, 'MaxIter', 300, 'Replicates', 3);
-        fprintf('K-means fallback uspešen.\n');
-    catch ME2
-        % Končni fallback na grid-based inicializacijo
-        fprintf('K-means tudi ni uspel (%s), uporabljam grid-based inicializacijo...\n', ME2.message);
-        input_min = min(relevant_inputs);
-        input_max = max(relevant_inputs);
-        grid_size = ceil(sqrt(R));
-        [x1_grid, x2_grid] = meshgrid(linspace(input_min(1), input_max(1), grid_size), ...
-                                      linspace(input_min(2), input_max(2), grid_size));
-        C = [x1_grid(:), x2_grid(:)];
-        C = C(1:R, :);
-        
-        % Simulacija cluster_idx za grid-based pristop
-        distances = pdist2(relevant_inputs, C);
-        [~, cluster_idx] = min(distances, [], 2);
+    % Calculate weighted variance for each dimension
+    for dim = 1:2
+        diff_sq = (clustering_data(:, dim) - weighted_mean(dim)).^2;
+        weighted_variance = sum(memberships .* diff_sq);
+        sigmas(i, dim) = sqrt(weighted_variance + 0.1);  % Add small value for stability
     end
 end
 
-% 2. KORAK: Določitev širine membership funkcij na podlagi FCM rezultatov
-fprintf('Korak 2: Določitev širine membership funkcij na podlagi FCM...\n');
-O = zeros(R, 2);
+% Use reasonable sigmas (not the huge ones from FCM)
+spreads = sigmas;
 
-if exist('U', 'var')
-    % Če imamo FCM membership matrike, uporabi jih za izračun širin
-    for i = 1:R
-        % Uteženi standardni odklon na podlagi membership vrednosti
-        weights = U(i, :)';  % Membership vrednosti za cluster i
-        weights = weights / sum(weights);  % Normalizacija
-        
-        % Uteženo povprečje
-        weighted_mean = sum(weights .* relevant_inputs, 1);
-        
-        % Utežena varianca
-        diff_sq = (relevant_inputs - weighted_mean).^2;
-        weighted_var = sum(weights .* diff_sq, 1);
-        O(i, :) = sqrt(weighted_var);
-        
-        % Nastavi minimalno širino
-        O(i, :) = max(O(i, :), 0.1);
+
+%% Step 4: Calculate Membership Functions - FIXED
+fprintf('Calculating membership functions...\n');
+membership_functions = zeros(num_clusters, size(clustering_data, 1));
+
+for i = 1:num_clusters
+    diff = clustering_data - centers(i, :);  % Now should work: [4198×2] - [1×2]
+    membership_functions(i, :) = exp(-0.5 * sum((diff ./ spreads(i, :)).^2, 2))';
+end
+
+% Normalize memberships
+total_membership = sum(membership_functions, 1);
+for i = 1:num_clusters
+    membership_functions(i, :) = membership_functions(i, :) ./ total_membership;
+end
+
+fprintf('Membership functions calculated successfully.\n');
+
+%% Step 5: Learn Rule Parameters (Weighted Least Squares)
+fprintf('Learning rule parameters...\n');
+rule_parameters = zeros(num_clusters, 5);  % 4 inputs + 1 constant
+
+for i = 1:num_clusters
+    weights = membership_functions(i, :)';
+    W_matrix = diag(weights);
+    
+    % Weighted least squares: theta = (X'*W*X)^(-1) * X'*W*Y
+    rule_parameters(i, :) = (regression_data' * W_matrix * regression_data) \ ...
+                            (regression_data' * W_matrix * Y_shifted);
+end
+
+%% Step 6: Simulation
+fprintf('Testing TS model...\n');
+y_ts_sim = zeros(length(Y_test), 1);
+
+for j = 1:length(Y_test)
+    current_state = X_test(j, 3:4);  % Past outputs
+    current_input = [X_test(j, :), 1];  % All inputs + constant
+    
+    % Calculate firing strengths
+    firing_strengths = zeros(num_clusters, 1);
+    for i = 1:num_clusters
+        diff = current_state - centers(i, :);
+        firing_strengths(i) = exp(-0.5 * sum((diff ./ spreads(i, :)).^2));
     end
-else
-    % Fallback na standardni pristop z hard clustering
-    for i = 1:R
-        cluster_data = relevant_inputs(cluster_idx == i, :);
-        if size(cluster_data, 1) > 1
-            O(i, :) = std(cluster_data, 0, 1);
-            O(i, :) = max(O(i, :), 0.1);
-        else
-            distances = pdist2(C(i, :), C);
-            distances(i) = inf;
-            O(i, :) = min(distances) / 2;
-        end
-    end
+    
+    % Normalize firing strengths
+    firing_strengths = firing_strengths / sum(firing_strengths);
+    
+    % Calculate rule outputs and final prediction
+    rule_outputs = rule_parameters * current_input';
+    y_ts_sim(j) = sum(firing_strengths .* rule_outputs);
 end
 
-% Zagotovi smiselne širine z alternativnim pristopom
-distances_between_centers = pdist(C);
-if ~isempty(distances_between_centers)
-    avg_distance = mean(distances_between_centers);
-    O = max(O, avg_distance/4);  % Nekoliko manjše kot pri K-means
-end
+%% Step 7: Evaluate Performance
+mae_ts = mean(abs(Y_test - y_ts_sim));
+rmse_ts = sqrt(mean((Y_test - y_ts_sim).^2));
 
-% 3. KORAK: Določitev uteži W in biasov b z uteženo linearno regresijo
-fprintf('Korak 3: Določitev uteži z uteženo linearno regresijo...\n');
-W = zeros(R, 4);
-b = zeros(R, 1);
+fprintf('TS Model Performance:\n');
+fprintf('  MAE: %.4f\n', mae_ts);
+fprintf('  RMSE: %.4f\n', rmse_ts);
 
-if exist('U', 'var')
-    % Uporabi FCM membership vrednosti za uteženo regresijo
-    for i = 1:R
-        weights = U(i, :)';  % Membership vrednosti za cluster i
-        
-        % Utežena linearna regresija
-        W_diag = diag(weights);  % Utežna matrika
-        X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
-        
-        try
-            % Utežena metoda najmanjših kvadratov: (X'WX)^(-1)X'WY
-            XTW = X_extended' * W_diag;
-            XTWX = XTW * X_extended;
-            XTWY = XTW * Y_shifted;
-            
-            % Dodaj regularizacijo za numerično stabilnost
-            lambda = 1e-6;
-            coeffs = (XTWX + lambda * eye(size(XTWX))) \ XTWY;
-            
-            W(i, :) = coeffs(1:4)';
-            b(i) = coeffs(5);
-            
-        catch
-            fprintf('Utežena regresija za cluster %d ni uspela, uporabljam običajno regresijo.\n', i);
-            % Fallback na običajno regresijo
-            X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
-            coeffs = X_extended \ Y_shifted;
-            W(i, :) = coeffs(1:4)';
-            b(i) = coeffs(5);
-        end
-    end
-else
-    % Fallback na hard clustering regresijo
-    for i = 1:R
-        cluster_data_idx = (cluster_idx == i);
-        
-        if sum(cluster_data_idx) > 4
-            X_cluster = X_shifted(cluster_data_idx, :);
-            Y_cluster = Y_shifted(cluster_data_idx);
-            
-            X_extended = [X_cluster, ones(size(X_cluster, 1), 1)];
-            
-            try
-                weights = X_extended \ Y_cluster;
-                W(i, :) = weights(1:4)';
-                b(i) = weights(5);
-            catch
-                lambda = 1e-6;
-                weights = (X_extended' * X_extended + lambda * eye(5)) \ (X_extended' * Y_cluster);
-                W(i, :) = weights(1:4)';
-                b(i) = weights(5);
-            end
-        else
-            fprintf('Cluster %d ima premalo podatkov (%d), uporabljam globalno regresijo.\n', i, sum(cluster_data_idx));
-            X_extended = [X_shifted, ones(size(X_shifted, 1), 1)];
-            weights = X_extended \ Y_shifted;
-            W(i, :) = weights(1:4)';
-            b(i) = weights(5);
-        end
-    end
-end
-
-% 4. KORAK: Prikaz rezultatov inicializacije
-fprintf('\n=== REZULTATI FCM INICIALIZACIJE ===\n');
-fprintf('Število pravil: %d\n', R);
-fprintf('Centri membership funkcij:\n');
-for i = 1:min(5, R)
-    fprintf('  Pravilo %d: Center=[%.3f, %.3f], Širina=[%.3f, %.3f]\n', ...
-            i, C(i,1), C(i,2), O(i,1), O(i,2));
-end
-if R > 5
-    fprintf('  ... in %d dodatnih pravil\n', R-5);
-end
-
-% Dodatne informacije o FCM
-if exist('U', 'var')
-    fprintf('\nFCM membership statistike:\n');
-    for i = 1:min(3, R)
-        max_membership = max(U(i, :));
-        avg_membership = mean(U(i, :));
-        fprintf('  Pravilo %d: Max membership=%.3f, Avg membership=%.3f\n', ...
-                i, max_membership, avg_membership);
-    end
-end
-
-% 5. KORAK: Evaluacija modela na treninskih podatkih
-fprintf('\nKorak 4: Evaluacija modela...\n');
-Y_train_pred = TS_eval(C, O, W, b, X_shifted');
-mae_train = mean(abs(Y_shifted - Y_train_pred'));
-rmse_train = sqrt(mean((Y_shifted - Y_train_pred').^2));
-
-fprintf('MAE na treninskih podatkih: %.6f\n', mae_train);
-fprintf('RMSE na treninskih podatkih: %.6f\n', rmse_train);
-
-% Izračunaj R² (koeficient determinacije)
-ss_res = sum((Y_shifted - Y_train_pred').^2);
-ss_tot = sum((Y_shifted - mean(Y_shifted)).^2);
-r_squared = 1 - (ss_res / ss_tot);
-fprintf('R² (koeficient determinacije): %.4f\n', r_squared);
-
-fprintf('=== FUZZY C-MEANS CLUSTERING KONČAN ===\n\n');
-
-
-% SIMULATION MODE
-Y_simulated = zeros(size(Y_test));
-
-
-
-for i = 1:length(Y_test)
-    if i == 1
-        y_prev1 = y_test(i+1); % y_test(2)
-        y_prev2 = y_test(i);   % y_test(1)
-    elseif i == 2
-        y_prev1 = Y_simulated(i-1); % Y_simulated(1) which predicts y_test(3)
-        y_prev2 = y_test(i);        % y_test(2)
-    else
-        y_prev1 = Y_simulated(i-1);
-        y_prev2 = Y_simulated(i-2);
-    end
-
-    % Construct the input vector
-    x_current = [u_test(i+1), u_test(i), -y_prev1, -y_prev2];
-
-    % Predict the current output
-    y_predicted_current = TS_eval(C, O, W, b, x_current');
-
-    % Store the predicted output
-    Y_simulated(i) = y_predicted_current;
-end
-
-% Calculate MAE for simulation
-mae_ts_sim = mean(abs(Y_test - Y_simulated'));
-fprintf('Takagi-Sugeno Model MAE (Simulation): %.4f\n', mae_ts_sim);
-
-% Plot simulation results
-figure('Position', [100, 100, 1200, 800]);
-plot(Y_test);
+%% Step 8: Plot Results
+figure('Position', [100, 100, 1200, 600]);
+plot(Y_test, 'b-', 'LineWidth', 1.5);
 hold on;
-plot(Y_simulated);
-title('Primerjava simuliranega in dejanskega izhoda (TS)');
+plot(y_ts_sim, 'r--', 'LineWidth', 1.5);
 xlabel('Sample');
-ylabel('Vrednost izhoda [V]');
-legend('Dejanski izhod', 'Simulirani izhod modela');
+ylabel('Output');
+title('Takagi-Sugeno Model Results');
+legend('Actual', 'TS Model', 'Location', 'best');
 grid on;
-hold off;
+
+fprintf('=== TS MODEL COMPLETED ===\n\n');
+
+% Store the TS model parameters for later use in your Convert function
+C = centers;     % For your Convert function
+O = spreads;     % For your Convert function  
+W = rule_parameters(:, 1:4);  % Weights (without constant term)
+b = rule_parameters(:, 5);    % Biases (constant terms)
 
 
 Naloga 6
@@ -457,12 +352,14 @@ title("Referencni signal");
 xlabel("Cas [s]");
 ylabel("Kot [deg]");
 
+
 % Simulation parametri
 casovniKorak = 0.01;
 % Parametri simulacije
 Ts = 0.01;  % Vzorec (Sample time)
 N_sim = 10000;  % Število simulacijskih korakov
 H = 3;  % Število upoštevanih členov
+
 
 
 
@@ -477,36 +374,46 @@ y_ref = zeros(1, N_sim);            % referencni signal
 
 
 % Integration and derivative component ADD
+xi = 0;
+Ki = 0.001;
+Kd = 10;
 
+previous_error = 0;
 
-H = 10;
-
+% Koeficienti za funkcijski regulator
 for k = 3:N_sim
     % Izračun napake
     y_ref(k) = C_ref * x_ref;  % Izhod referenčnega sistema -> C matrika * referenčni vhod
-    
-    % Izračunovanje matrik sistema na podlagi TS modela za trenutno stanje
+    e = referencniSignal(k) - y_process(k-1);  % Napaka glede na proces, na zaćetku je y_process = 0
+
+
+    xi = xi + e;
+
+    % Calculate derivative term
+    derivative_term = Kd * (e - previous_error);
+
+    % Update previous error
+    previous_error = e;
+
+
+    % Izračunovanje matrik sistema na podlagi TS modela za trenutno stanje modela
     [A_m, B_m, C_m, R_m] = Convert(C, O, W, b, [-y_process(k-1); -y_process(k-2)]);
-    
-    % MPC Control Law (replace PID)
-    % Calculate step response matrix G0 for horizon H
+
+    % Prediktivni regulator -> regulirni zakon iz worda
     G0 = C_m * (A_m^H - eye(size(A_m))) * pinv(A_m - eye(size(A_m))) * B_m;
-    
-    % Calculate control gain G
     G = pinv(G0) * (1 - A_ref^H);
-    
-    % MPC control signal calculation
-    error = referencniSignal(k) - y_process(k-1);  % Current tracking error
-    
-    % MPC control law (similar to main6.m)
-    u(k) = G * error + pinv(G0) * y_model(k-1) - pinv(G0) * C_m * (A_m^H) * x_model - pinv(B_m) * R_m;
-    
-    % Update states
+
+   
+    % Posodobitev stanj za referenčni, modelni in procesni sistem
     x_ref = A_ref * x_ref + B_ref * referencniSignal(k);
     x_model = A_m * x_model + B_m * u(k) + R_m;
     y_model(k) = C_m * x_model;
-    
-    % Update process (Helicrane)
+
+     % Krmilni signal - regulirni zakon
+    u(k) = G * e + xi * Ki + derivative_term + pinv(G0) * y_model(k-1) - pinv(G0) * C_m * (A_m^H) * x_model - pinv(B_m) * R_m;
+
+
+    % Procesni model (Helicrane)
     [x_process(2), x_process(1)] = helicrane(u(k), x_process);
     y_process(k) = x_process(2);
 end
@@ -575,110 +482,145 @@ function [u, t] = generateAPRBS(N, amplitude, Ts, Th, padding)
     t = (0:length(u)-1) * Ts;
 end
 
+% Current code has incomplete gradient calculations
+% Fix the TS_train function:
 
-% Funkcija treninga TS modela
 function [C, O, W, b] = TS_train(C, O, W, b, X_train_normalized, Y_train_normalized, learning_rate, epochs)
     for epoch = 1:epochs
         total_loss = 0;  
         for i = 1:size(X_train_normalized, 1)
-            % FIX: Add these missing lines
             X = X_train_normalized(i, :);
             Y = Y_train_normalized(i);
 
-            % Izračun pripadnosti posameznim funckijam
+            % Calculate membership values
             membership_values = exp(-0.5 * sum((X(3:4) - C).^2 ./ (O.^2), 2));
+            
             % Prevent division by very small numbers
-            % fallback - da se ne deli z zelo majhnimi vrednostmi
-            if sum(membership_values) < 1e-3
-                membership_values = membership_values + 1e-3;
+            if sum(membership_values) < 1e-6
+                membership_values = membership_values + 1e-6;
             end
-
-            % Normalizacija pripadnosti
+            
+            % Normalize membership values
             membership_values = membership_values / sum(membership_values);
 
-            % Izračun napovedane funkcije
-            % y = ax + b
-            % Napoved funkcij kot utežena vsota podfunkcij
+            % Calculate rule outputs
             rule_outputs = W * X' + b; % R x 1 vector
-
-            % izhodi pravil - uteženo z membership vrednostmi
+            
+            % Calculate predicted output
             y_predicted = sum(membership_values .* rule_outputs);
 
-            % Izračun napake med napovedano in ground truth funkcijo
+            % Calculate error
             error = Y - y_predicted;
             loss = error^2;
-
             total_loss = total_loss + loss;
 
-            % Odvodi glede na vse parametre
-        
-            grad_C = (X(3:4) - C) ./ O.^2 .* membership_values .* (rule_outputs - sum(membership_values .* rule_outputs)) / sum(membership_values);
-            grad_O = ((X(3:4) - C).^2 ./ O.^3) .* membership_values .* (rule_outputs - sum(membership_values .* rule_outputs)) / sum(membership_values);
-            grad_W = membership_values * X;
-            grad_b = membership_values;
+            % Calculate gradients (FIXED)
+            % For centers
+            diff_c = (X(3:4) - C) ./ (O.^2); % R x 2
+            grad_C = zeros(size(C));
+            for r = 1:size(C,1)
+                grad_C(r,:) = diff_c(r,:) * membership_values(r) * ...
+                    (rule_outputs(r) - y_predicted);
+            end
+            
+            % For spreads
+            diff_o = ((X(3:4) - C).^2) ./ (O.^3); % R x 2
+            grad_O = zeros(size(O));
+            for r = 1:size(O,1)
+                grad_O(r,:) = diff_o(r,:) * membership_values(r) * ...
+                    (rule_outputs(r) - y_predicted);
+            end
+            
+            % For weights and biases
+            grad_W = membership_values * X; % R x 4
+            grad_b = membership_values; % R x 1
 
-            % Posodobitev vrednosti matrik/vektorjev s korakom lr
+            % Update parameters
             C = C - learning_rate * (-2 * error * grad_C);
             O = O - learning_rate * (-2 * error * grad_O);
             W = W - learning_rate * (-2 * error * grad_W);
             b = b - learning_rate * (-2 * error * grad_b);
+            
+            % Ensure O stays positive
+            O = max(O, 0.1);
         end
+        
         total_loss = total_loss / size(X_train_normalized, 1);
-        fprintf('Epoch %d, Loss: %.4f\n', epoch, total_loss);
+        if mod(epoch, 10) == 1
+            fprintf('Epoch %d, Loss: %.6f\n', epoch, total_loss);
+        end
     end
 end
 
 % Funkcija za napoved izhoda TS modela
+% Fix the TS_eval function:
+
 function [Y] = TS_eval(C, O, W, b, X)
-    num_samples = size(X, 2);
+    % Handle both single sample and multiple samples
+    if size(X, 1) == 1  % Single sample as row vector
+        X = X';  % Convert to column vector
+    end
+    
+    if size(X, 2) == 1  % Single sample as column vector
+        num_samples = 1;
+        X_samples = X;
+    else  % Multiple samples
+        num_samples = size(X, 2);
+        X_samples = X;
+    end
+    
     Y = zeros(1, num_samples);
     
-    % Loop skozi vse sample v signalu za primerjanje
     for i = 1:num_samples
-
-        % Izračun pripadnosti podfunkcijam - gauss
-        membership_values = exp(-0.5 * sum((X(3:4, i)' - C).^2 ./ (O.^2), 2)); 
+        if num_samples == 1
+            x_current = X_samples;
+        else
+            x_current = X_samples(:, i);
+        end
         
-        % Normalizacija pripadnosti podfunkcijam
+        % Calculate membership values (only for positions 3:4)
+        membership_values = exp(-0.5 * sum((x_current(3:4)' - C).^2 ./ (O.^2), 2)); 
+        
+        % Prevent division by zero
+        if sum(membership_values) < 1e-6
+            membership_values = membership_values + 1e-6;
+        end
+        
+        % Normalize membership values
         membership_values = membership_values / sum(membership_values);
         
-
-        % Izračun posameznih funkc
-        rule_outputs = W * X(:, i) + b; 
+        % Calculate rule outputs (use all 4 inputs)
+        rule_outputs = W * x_current + b; 
         Y(i) = sum(membership_values .* rule_outputs); 
     end
 end
 
 
 function [A_state, B_state, C_state, R_state] = Convert(centers, spreads, weights, offsets, input)
+
     % Prevajanje TS modela v prostor stanj
-    
+
     numRules = size(centers, 1);  % Število funkcij
-    
-    % Initialize matrices
-    A_state = zeros(2, 2);
-    B_state = zeros(2, 1);
-    C_state = zeros(1, 2);
-    R_state = zeros(2, 1);
+    [A_state, B_state, C_state, R_state] = deal(zeros(2, 2), zeros(2, 1), zeros(1, 2), zeros(2, 1));
 
-    % Calculate membership values
     membershipValues = exp(-0.5 * sum((input' - centers).^2 ./ (spreads.^2), 2));  % Gaussian membership
-    membershipValues = membershipValues / sum(membershipValues);  % Normalization
+    membershipValues = membershipValues / sum(membershipValues);  % Normalizcija membershipov
 
-    % Weighted combination of rule matrices
+    % Sestavitev matrik stanja
     for ruleIndex = 1:numRules
-        A_rule = [0, -weights(ruleIndex, 4); 1, -weights(ruleIndex, 3)];  % 2x2 system dynamics
-        B_rule = [weights(ruleIndex, 2); weights(ruleIndex, 1)]; % 2x1 input influence
-        C_rule = [0, 1]; % 1x2 output matrix
-        R_rule = [0; offsets(ruleIndex)];  % 2x1 offset vector
+        A_rule = [0, -weights(ruleIndex, 4); 1, -weights(ruleIndex, 3)];  % 2x2, uteži po diagonali -> Dinamika sistema
+        B_rule = [weights(ruleIndex, 2); weights(ruleIndex, 1)]; % 2x1 -> vpliv vhoda na stanje
+        C_rule = [0, 1];
+        R_rule = [0; offsets(ruleIndex)];  % Deviacija dinamike za funkcijo
 
-        % Weighted sum of matrices
+        % Posodobitev matrik prostora stanj za posamezno pravilo
         A_state = A_state + membershipValues(ruleIndex) * A_rule;
         B_state = B_state + membershipValues(ruleIndex) * B_rule;
         C_state = C_state + membershipValues(ruleIndex) * C_rule;
         R_state = R_state + membershipValues(ruleIndex) * R_rule;
     end
+    input=0;
+    
 end
-
 
 
