@@ -53,7 +53,7 @@ ylabel("Izhodni signal [V]");
 
 
 N = 4000;        % ŠT. aprbs samplov
-amplitude = 2; % 2   % amplituda napetosti
+amplitude = 1.8; % 2   % amplituda napetosti
 Ts = 0.01;       % Sampling 
 Th = 0.5;       % Hrizont spreminjanja aprbs signala
 padding = 200;   % paddanje signala pred/po signalu
@@ -250,25 +250,28 @@ fprintf('Testing TS model...\n');
 Y_ts_simulated = zeros(length(Y_test), 1);
 % Simulation loop
 for i = 1:length(Y_test)
+    % Determine which past outputs to use
     if i == 1
-        % For first prediction, use actual test data
-        y_prev1 = -y_test(i+2);  % -y_test(3) 
-        y_prev2 = -y_test(i+1);  % -y_test(2)
+        % For first prediction, we need actual past values
+        y_prev1 = -y_test(2);  % y_test corresponds to y(3:end), so y_test(2) = y(4)
+        y_prev2 = -y_test(1);  % y_test(1) = y(3)
     elseif i == 2
-        % For second prediction, use one simulated and one actual
-        y_prev1 = -Y_ts_simulated(i-1);  % Use previous simulation
-        y_prev2 = -y_test(i+1);          % Still use actual y_test(3)
+        % For second prediction, use one simulated
+        y_prev1 = -Y_ts_simulated(i-1);  % First simulated output
+        y_prev2 = -y_test(1);            % Still use actual y(3)
     else
-        % For all subsequent predictions, use simulated values
-        y_prev1 = -Y_ts_simulated(i-1);  % Previous simulated output
-        y_prev2 = -Y_ts_simulated(i-2);  % Two steps back simulated output
+        % For all subsequent predictions, use only simulated values
+        y_prev1 = -Y_ts_simulated(i-1);  % Previous simulated
+        y_prev2 = -Y_ts_simulated(i-2);  % Two steps back simulated
     end
     
-    % Construct current input vector [u(k), u(k-1), -y(k-1), -y(k-2)]
-    current_state = [y_prev1, y_prev2];  % Past outputs (already negated)
-    current_input = [u_test(i+2), u_test(i+1), current_state];  % All inputs
+    % FIXED: Use current and past inputs (not future!)
+    % Since Y_test starts from index 3 of original signal:
+    % Y_test(i) corresponds to y(i+2) in original indexing
+    current_input = [u_test(i+1), u_test(i), y_prev1, y_prev2];  % [u(k), u(k-1), -y(k-1), -y(k-2)]
     
     % Calculate firing strengths using simulated state
+    current_state = [y_prev1, y_prev2];  % Past outputs for clustering
     firing_strengths = zeros(num_clusters, 1);
     for j = 1:num_clusters
         diff = current_state - Centers(j, :);
@@ -291,14 +294,14 @@ mae_ts_sim = mean(abs(Y_test - Y_ts_simulated));
 rmse_ts_sim = sqrt(mean((Y_test - Y_ts_simulated).^2));
 
 fprintf('TS Model Performance:\n');
-fprintf('  MAE: %.4f\n', mae_ts);
-fprintf('  RMSE: %.4f\n', rmse_ts);
+fprintf('  MAE: %.4f\n', mae_ts_sim);
+fprintf('  RMSE: %.4f\n', rmse_ts_sim);
 
 %% Step 8: Plot Results
 figure('Position', [100, 100, 1200, 600]);
 plot(Y_test, 'b-', 'LineWidth', 1.5);
 hold on;
-plot(y_ts_sim, 'r--', 'LineWidth', 1.5);
+plot(Y_ts_simulated, 'r--', 'LineWidth', 1.5);
 xlabel('Sample');
 ylabel('Output');
 title('Takagi-Sugeno Model Results');
